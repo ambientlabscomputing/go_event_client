@@ -66,6 +66,7 @@ func NewEventClient(ctx context.Context, options EventClientOptions, getTokenCal
 func (e *EventClientImpl) Start() error {
 	logger := e.Logger
 
+	logger.Debug("starting event client", "event_api_url", e.Options.EventAPIURL, "sockets_url", e.Options.SocketsURL)
 	if err := e.RegisterSubscriber(); err != nil {
 		logger.Error("failed to register subscriber", "error", err)
 		return err
@@ -183,23 +184,28 @@ func (e *EventClientImpl) RequestSession() error {
 // readPump blocks on ReadMessage, parsing incoming JSON frames and dispatching
 func (e *EventClientImpl) readPump() {
 	defer e.cancel()
+	logger := e.Logger
 
 	// Set limits and pong handler
+	logger.Debug("setting read limits and pong handler")
 	e.conn.SetReadLimit(512)
 	e.conn.SetReadDeadline(time.Now().Add(time.Duration(e.Options.PingInterval) * time.Second))
 	e.conn.SetPongHandler(func(appData string) error {
 		e.conn.SetReadDeadline(time.Now().Add(time.Duration(e.Options.PingInterval) * time.Second))
 		return nil
 	})
+	logger.Debug("starting read pump")
 
 	for {
 		select {
 		case <-e.ctx.Done():
+			logger.Debug("context done, stopping read pump")
 			return
 		default:
 			_, data, err := e.conn.ReadMessage()
 			if err != nil {
-				return
+				logger.Error("failed to read message", "error", err)
+				continue
 			}
 			// Dispatch matching handlers in their own goroutines
 			go e.dispatch(data)
@@ -238,19 +244,42 @@ func (e *EventClientImpl) writePump() {
 
 // dispatch unmarshals the frame and calls all handlers whose regex matches the topic
 func (e *EventClientImpl) dispatch(raw []byte) {
+	logger := e.Logger
+
+	logger.Debug("dispatching message", "raw_data", string(raw))
+	if len(raw) == 0 {
+		logger.Warn("received empty frame, ignoring")
+		return
+	}
+
 	var m Message
 	if err := json.Unmarshal(raw, &m); err != nil {
-		// invalid frame
+		logger.Error("failed to unmarshal message", "error", err, "raw_data", string(raw))
 		return
 	}
 
 	e.mu.RLock()
+	logger.Debug("acquired read lock for handlers", "num_handlers", len(e.handlers))
+	if len(e.handlers) == 0 {
+		logger.Debug("no handlers registered, ignoring message", "topic", m.Topic)
+		e.mu.RUnlock()
+		return
+	}
+	// Copy handlers to avoid holding the lock while calling them
+	logger.Debug("found handlers for topic", "topic", m.Topic, "num_handlers", len(e.handlers))
 	entries := append([]handlerEntry(nil), e.handlers...)
 	e.mu.RUnlock()
 
+	found_handler := false
 	for _, entry := range entries {
+		logger.Debug("checking handler", "pattern", entry.pattern.String(), "topic", m.Topic)
 		if entry.pattern.MatchString(m.Topic) {
+			logger.Debug("handler matched", "pattern", entry.pattern.String(), "topic", m.Topic)
+			found_handler = true
 			go entry.handler(m.Message)
+		}
+		if !found_handler {
+			logger.Warn("no handler matched for topic", "topic", m.Topic, "pattern", entry.pattern.String())
 		}
 	}
 }
@@ -300,13 +329,16 @@ func (e *EventClientImpl) Stop() error {
 
 func (e *EventClientImpl) NewSubscription(ctx context.Context, topic string) error {
 	// call the API to create a new subscription
+	e.Logger.Info("creating new subscription", "topic", topic)
 	token, err := e.GetTokenCallback(ctx)
 	if err != nil {
 		e.Logger.Error("failed to get token", "error", err)
 		return err
 	}
+	e.Logger.Debug("got token for subscription")
 
 	url := e.Options.EventAPIURL + "/subscriptions/?topic=" + topic + "&subscriber_id=" + strconv.Itoa(e.Subscriber.ID)
+	e.Logger.Debug("subscription URL", "url", url)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		e.Logger.Error("failed to create request", "error", err)

@@ -8,7 +8,7 @@ import (
 
 	"log/slog"
 
-	"github.com/ambientlabscomputing/go_event_client" // Replace with the actual module path
+	"github.com/ambientlabscomputing/go_event_client"
 )
 
 func main() {
@@ -19,7 +19,7 @@ func main() {
 	options := go_event_client.EventClientOptions{
 		EventAPIURL:  "http://events.ambientlabsdev.io",
 		SocketsURL:   "wss://sockets.ambientlabsdev.io",
-		PingInterval: 30,
+		PingInterval: 1,
 	}
 
 	// Define a token callback function
@@ -32,8 +32,8 @@ func main() {
 	client := go_event_client.NewEventClient(context.Background(), options, getToken, logger)
 
 	// Add a simple handler for a topic
-	err := client.AddHandler("^example\\.topic$", func(message string) {
-		fmt.Printf("Received message on 'example.topic': %s\n", message)
+	err := client.AddHandler("^example-.*\\.topic$", func(message string) {
+		fmt.Printf("Received message on '^example-.*\\.topic$': %s\n", message)
 	})
 	if err != nil {
 		logger.Error("failed to subscribe to topic", "error", err)
@@ -47,7 +47,7 @@ func main() {
 	}
 
 	// subscribe to example.topic
-	err = client.NewSubscription(context.Background(), "example.topic")
+	err = client.NewSubscription(context.Background(), "example-1.topic")
 	if err != nil {
 		logger.Error("failed to subscribe to topic", "error", err)
 		return
@@ -55,7 +55,7 @@ func main() {
 	defer client.Stop()
 
 	// Publish a test message
-	err = client.Publish("example.topic", map[string]string{"key": "value"})
+	err = client.Publish("example-1.topic", map[string]string{"key": "value"})
 	if err != nil {
 		logger.Error("failed to publish message", "error", err)
 		return
