@@ -39,5 +39,5 @@ type Session struct {
 	SubscriberID  int    `json:"subscriber_id"`
 	Status        string `json:"status"`
 	LastConnected string `json:"last_connected"`
-	Token         string `json:"token_"`
+	Token         string `json:"token"`
 }
