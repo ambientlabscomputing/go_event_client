@@ -188,7 +188,7 @@ func (e *EventClientImpl) readPump() {
 
 	// Set limits and pong handler
 	logger.Debug("setting read limits and pong handler")
-	e.conn.SetReadLimit(512)
+	e.conn.SetReadLimit(65536) // 64KB limit
 	e.conn.SetReadDeadline(time.Now().Add(time.Duration(e.Options.PingInterval) * time.Second))
 	e.conn.SetPongHandler(func(appData string) error {
 		e.conn.SetReadDeadline(time.Now().Add(time.Duration(e.Options.PingInterval) * time.Second))
