@@ -1,13 +1,14 @@
 package go_event_client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
-	"strconv"
 	"sync"
 	"time"
 
@@ -21,7 +22,12 @@ type EventClient interface {
 	Stop() error
 	AddHandler(expr string, handler func(string)) error
 	Publish(topic string, v interface{}) error
+	PublishWithAggregate(topic string, v interface{}, aggregateType string, aggregateID *int) error
+	PublishViaAPI(ctx context.Context, topic string, v interface{}, aggregateType string, aggregateID *int) error
 	NewSubscription(ctx context.Context, topic string) error
+	NewSubscriptionWithOptions(ctx context.Context, topic string, aggregateType string, aggregateID *int, isRegex bool) error
+	NewAggregateTypeSubscription(ctx context.Context, topic string, aggregateType string, isRegex bool) error
+	NewAggregateSubscription(ctx context.Context, topic string, aggregateType string, aggregateID int, isRegex bool) error
 }
 
 type EventClientOptions struct {
@@ -43,14 +49,15 @@ type EventClientImpl struct {
 	HTTPClient       *http.Client
 
 	// internal values set during runtime
-	Subscriber *Subscriber
-	Session    *Session
-	conn       *websocket.Conn
-	send       chan []byte
-	handlers   []handlerEntry
-	mu         sync.RWMutex
-	ctx        context.Context
-	cancel     context.CancelFunc
+	Subscriber   *Subscriber
+	Session      *Session
+	ConnectionID string
+	conn         *websocket.Conn
+	send         chan []byte
+	handlers     []handlerEntry
+	mu           sync.RWMutex
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 func NewEventClient(ctx context.Context, options EventClientOptions, getTokenCallback GetTokenCallback, logger *slog.Logger) EventClient {
@@ -104,7 +111,7 @@ func (e *EventClientImpl) RegisterSubscriber() error {
 		e.Logger.Error("failed to get token", "error", err)
 		return err
 	}
-	req, err := http.NewRequestWithContext(e.Ctx, http.MethodPost, e.Options.EventAPIURL+"/subscribers", nil)
+	req, err := http.NewRequestWithContext(e.Ctx, http.MethodPost, e.Options.EventAPIURL+"/v2/subscribers", nil)
 	if err != nil {
 		e.Logger.Error("failed to create request", "error", err)
 		return err
@@ -122,8 +129,8 @@ func (e *EventClientImpl) RegisterSubscriber() error {
 
 	if resp.StatusCode >= 400 {
 		errData, _ := io.ReadAll(resp.Body)
-		e.Logger.Error("failed to register subscriber", "status_code", resp.StatusCode, "data", errData)
-		return err
+		e.Logger.Error("failed to register subscriber", "status_code", resp.StatusCode, "data", string(errData))
+		return fmt.Errorf("failed to register subscriber: status %d, body: %s", resp.StatusCode, string(errData))
 	}
 
 	var subscriber Subscriber
@@ -141,14 +148,14 @@ func (e *EventClientImpl) RequestSession() error {
 	logger := e.Logger
 	if e.Subscriber == nil {
 		logger.Error("subscriber not registered")
-		return nil
+		return fmt.Errorf("subscriber not registered")
 	}
 	token, err := e.GetTokenCallback(e.Ctx)
 	if err != nil {
 		logger.Error("failed to get token", "error", err)
 		return err
 	}
-	req, err := http.NewRequestWithContext(e.Ctx, http.MethodPost, e.Options.EventAPIURL+"/sessions", nil)
+	req, err := http.NewRequestWithContext(e.Ctx, http.MethodPost, e.Options.EventAPIURL+"/v2/sessions", nil)
 	if err != nil {
 		logger.Error("failed to create request", "error", err)
 		return err
@@ -166,8 +173,8 @@ func (e *EventClientImpl) RequestSession() error {
 
 	if resp.StatusCode >= 400 {
 		errData, _ := io.ReadAll(resp.Body)
-		logger.Error("failed to request session", "status_code", resp.StatusCode, "data", errData)
-		return err
+		logger.Error("failed to request session", "status_code", resp.StatusCode, "data", string(errData))
+		return fmt.Errorf("failed to request session: status %d, body: %s", resp.StatusCode, string(errData))
 	}
 
 	var session Session
@@ -204,8 +211,14 @@ func (e *EventClientImpl) readPump() {
 		default:
 			_, data, err := e.conn.ReadMessage()
 			if err != nil {
-				logger.Error("failed to read message", "error", err)
-				continue
+				// Check if this is a graceful shutdown
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+					logger.Debug("websocket closed gracefully", "error", err)
+					return
+				} else {
+					logger.Error("failed to read message", "error", err)
+					return
+				}
 			}
 			// Dispatch matching handlers in their own goroutines
 			go e.dispatch(data)
@@ -258,6 +271,12 @@ func (e *EventClientImpl) dispatch(raw []byte) {
 		return
 	}
 
+	// Capture connection ID from the first message for API publishing
+	if e.ConnectionID == "" && m.ConnectionID != "" {
+		e.ConnectionID = m.ConnectionID
+		logger.Debug("captured connection ID", "connection_id", e.ConnectionID)
+	}
+
 	e.mu.RLock()
 	logger.Debug("acquired read lock for handlers", "num_handlers", len(e.handlers))
 	if len(e.handlers) == 0 {
@@ -299,7 +318,16 @@ func (e *EventClientImpl) AddHandler(expr string, handler func(string)) error {
 
 // Publish sends a topic and payload. It blocks only if the send buffer is full.
 func (e *EventClientImpl) Publish(topic string, v interface{}) error {
-	msg := Message{Topic: topic}
+	return e.PublishWithAggregate(topic, v, "", nil)
+}
+
+// PublishWithAggregate sends a topic and payload with aggregate information
+func (e *EventClientImpl) PublishWithAggregate(topic string, v interface{}, aggregateType string, aggregateID *int) error {
+	msg := Message{
+		Topic:         topic,
+		AggregateType: aggregateType,
+		AggregateID:   aggregateID,
+	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -319,6 +347,63 @@ func (e *EventClientImpl) Publish(topic string, v interface{}) error {
 	}
 }
 
+// PublishViaAPI publishes a message via HTTP API instead of WebSocket (useful for testing)
+func (e *EventClientImpl) PublishViaAPI(ctx context.Context, topic string, v interface{}, aggregateType string, aggregateID *int) error {
+	if e.Session == nil {
+		return fmt.Errorf("session not available for API publishing")
+	}
+	if e.ConnectionID == "" {
+		return fmt.Errorf("connection ID not available for API publishing - ensure WebSocket connection is established and at least one message has been received")
+	}
+
+	token, err := e.GetTokenCallback(ctx)
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	msgCreate := MessageCreate{
+		Topic:         topic,
+		Message:       string(data),
+		AggregateType: aggregateType,
+		AggregateID:   aggregateID,
+	}
+
+	jsonData, err := json.Marshal(msgCreate)
+	if err != nil {
+		return err
+	}
+
+	// Add required query parameters
+	url := fmt.Sprintf("%s/v2/messages?session_id=%s&connection_id=%s", e.Options.EventAPIURL, e.Session.ID, e.ConnectionID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := e.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		errData, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to publish message: status %d, body: %s", resp.StatusCode, string(errData))
+	}
+
+	return nil
+}
+
 func (e *EventClientImpl) Stop() error {
 	e.cancel()
 	if e.conn != nil {
@@ -328,8 +413,12 @@ func (e *EventClientImpl) Stop() error {
 }
 
 func (e *EventClientImpl) NewSubscription(ctx context.Context, topic string) error {
+	return e.NewSubscriptionWithOptions(ctx, topic, "", nil, false)
+}
+
+func (e *EventClientImpl) NewSubscriptionWithOptions(ctx context.Context, topic string, aggregateType string, aggregateID *int, isRegex bool) error {
 	// call the API to create a new subscription
-	e.Logger.Info("creating new subscription", "topic", topic)
+	e.Logger.Info("creating new subscription", "topic", topic, "aggregate_type", aggregateType, "aggregate_id", aggregateID, "is_regex", isRegex)
 	token, err := e.GetTokenCallback(ctx)
 	if err != nil {
 		e.Logger.Error("failed to get token", "error", err)
@@ -337,33 +426,107 @@ func (e *EventClientImpl) NewSubscription(ctx context.Context, topic string) err
 	}
 	e.Logger.Debug("got token for subscription")
 
-	url := e.Options.EventAPIURL + "/subscriptions/?topic=" + topic + "&subscriber_id=" + strconv.Itoa(e.Subscriber.ID)
+	subscription := SubscriptionCreate{
+		Topic:         topic,
+		SubscriberID:  e.Subscriber.ID,
+		AggregateType: aggregateType,
+		AggregateID:   aggregateID,
+		IsRegex:       isRegex,
+	}
+
+	jsonData, err := json.Marshal(subscription)
+	if err != nil {
+		e.Logger.Error("failed to marshal subscription", "error", err)
+		return err
+	}
+
+	url := e.Options.EventAPIURL + "/v2/subscriptions"
 	e.Logger.Debug("subscription URL", "url", url)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		e.Logger.Error("failed to create request", "error", err)
 		return err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := e.HTTPClient.Do(req)
 	if err != nil {
-		errData, _ := io.ReadAll(resp.Body)
-		e.Logger.Error("failed to send request", "error", err, "data", errData)
+		e.Logger.Error("failed to send request", "error", err)
 		return err
 	}
+	defer resp.Body.Close()
+
 	if resp.StatusCode >= 400 {
 		errData, _ := io.ReadAll(resp.Body)
-		e.Logger.Error("failed to create subscription", "status_code", resp.StatusCode, "data", errData)
-		return err
+		e.Logger.Error("failed to create subscription", "status_code", resp.StatusCode, "data", string(errData))
+		return fmt.Errorf("failed to create subscription: %s", string(errData))
 	}
-	var subscription Subscription
-	defer resp.Body.Close()
-	if err := json.NewDecoder(resp.Body).Decode(&subscription); err != nil {
+
+	var createdSubscription Subscription
+	if err := json.NewDecoder(resp.Body).Decode(&createdSubscription); err != nil {
 		e.Logger.Error("failed to decode response", "error", err)
 		return err
 	}
-	e.Logger.Info("subscription created", "subscription_id", subscription.ID)
+	e.Logger.Info("subscription created", "subscription_id", createdSubscription.ID)
 	return nil
+}
+
+// NewAggregateTypeSubscription creates a subscription for all messages of a specific aggregate type
+func (e *EventClientImpl) NewAggregateTypeSubscription(ctx context.Context, topic string, aggregateType string, isRegex bool) error {
+	return e.NewSubscriptionWithOptions(ctx, topic, aggregateType, nil, isRegex)
+}
+
+// NewAggregateSubscription creates a subscription for a specific aggregate type and ID
+func (e *EventClientImpl) NewAggregateSubscription(ctx context.Context, topic string, aggregateType string, aggregateID int, isRegex bool) error {
+	return e.NewSubscriptionWithOptions(ctx, topic, aggregateType, &aggregateID, isRegex)
+}
+
+// GetOAuthToken is a public convenience function for obtaining OAuth tokens
+func GetOAuthToken(ctx context.Context, oauthURL, clientID, clientSecret string) (string, error) {
+	requestBody := map[string]string{
+		"client_id":     clientID,
+		"client_secret": clientSecret,
+		"grant_type":    "client_credentials",
+		"request_type":  "api",
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, oauthURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to get token: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResponse struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
+		return "", fmt.Errorf("failed to decode token response: %w", err)
+	}
+
+	return tokenResponse.AccessToken, nil
 }

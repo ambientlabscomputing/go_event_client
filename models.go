@@ -1,42 +1,52 @@
 package go_event_client
 
 type Message struct {
-	ID           int    `json:"id"`
-	CreatedAt    string `json:"created_at"`
-	Topic        string `json:"topic"`
-	Message      string `json:"message"`
-	ConnectionID int    `json:"connection_id"`
-	SessionID    int    `json:"session_id"`
-	Timestamp    string `json:"timestamp"`
+	ID            string `json:"id"`
+	CreatedAt     string `json:"created_at"`
+	Topic         string `json:"topic"`
+	Message       string `json:"message"`
+	ConnectionID  string `json:"connection_id"`
+	SessionID     string `json:"session_id"`
+	Timestamp     string `json:"timestamp"`
+	AggregateType string `json:"aggregate_type,omitempty"`
+	AggregateID   *int   `json:"aggregate_id,omitempty"`
 }
 
 type MessageCreate struct {
-	Topic   string `json:"topic"`
-	Message string `json:"message"`
+	Topic         string `json:"topic"`
+	Message       string `json:"message"`
+	AggregateType string `json:"aggregate_type,omitempty"`
+	AggregateID   *int   `json:"aggregate_id,omitempty"`
 }
 
 type Subscriber struct {
-	ID        int    `json:"id"`
+	ID        string `json:"id"`
 	CreatedAt string `json:"created_at"`
 	UserID    string `json:"user_id"`
 }
 
 type SubscriptionCreate struct {
-	Topic        string `json:"topic"`
-	SubscriberID int    `json:"subscriber_id"`
+	Topic         string `json:"topic"`
+	SubscriberID  string `json:"subscriber_id"`
+	AggregateType string `json:"aggregate_type,omitempty"`
+	AggregateID   *int   `json:"aggregate_id,omitempty"`
+	IsRegex       bool   `json:"is_regex,omitempty"`
 }
 
 type Subscription struct {
-	ID           int    `json:"id"`
-	CreatedAt    string `json:"created_at"`
-	Topic        string `json:"topic"`
-	SubscriberID int    `json:"subscriber_id"`
+	ID            string `json:"id"`
+	CreatedAt     string `json:"created_at"`
+	Topic         string `json:"topic"`
+	SubscriberID  string `json:"subscriber_id"`
+	AggregateType string `json:"aggregate_type,omitempty"`
+	AggregateID   *int   `json:"aggregate_id,omitempty"`
+	IsRegex       bool   `json:"is_regex,omitempty"`
 }
 
 type Session struct {
-	ID            int    `json:"id"`
+	ID            string `json:"id"`
 	CreatedAt     string `json:"created_at"`
-	SubscriberID  int    `json:"subscriber_id"`
+	SubscriberID  string `json:"subscriber_id"`
 	Status        string `json:"status"`
 	LastConnected string `json:"last_connected"`
 	Token         string `json:"token"`
