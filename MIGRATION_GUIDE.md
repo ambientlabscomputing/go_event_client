@@ -1,4 +1,4 @@
-# Migration Guide: Go Event Client v2.0
+# Migration Guide: Go Event Client v1.0
 
 This guide will help you migrate from the previous version of the Go Event Client to the new version that supports UUID IDs, aggregate fields, and regex topic matching.
 
@@ -61,6 +61,30 @@ func (client *EventClient) NewSubscriptionWithOptions(ctx context.Context, topic
 - No immediate changes required - existing calls to `NewSubscription` will continue to work
 - Consider migrating to new subscription methods for enhanced functionality
 
+### 3. Handler Function Signature Change
+
+**Before:**
+```go
+err := client.AddHandler("^user\\..*$", func(message string) {
+    fmt.Printf("Received: %s\n", message)
+})
+```
+
+**After:**
+```go
+err := client.AddHandler("^user\\..*$", func(message go_event_client.Message) {
+    fmt.Printf("Received: %s\n", message.Message)
+    fmt.Printf("Topic: %s\n", message.Topic)
+    fmt.Printf("Message ID: %s\n", message.ID)
+    // Access other message metadata...
+})
+```
+
+**Migration Steps:**
+- Update all handler functions to accept `go_event_client.Message` instead of `string`
+- Access message payload using `message.Message` field
+- Take advantage of additional metadata now available in handlers (topic, ID, aggregate info, etc.)
+
 ## New Features
 
 ### 1. Aggregate-Based Subscriptions
@@ -101,12 +125,14 @@ type Message struct {
 
 ## Updated Usage Examples
 
-### Basic Usage (Backward Compatible)
+### Basic Usage (Updated for New Handler Signature)
 
 ```go
-// This code continues to work without changes
+// Updated to use new Message object in handlers
 client := go_event_client.NewEventClient(ctx, options, getToken, logger)
-err := client.AddHandler("^example\\..*$", handleMessage)
+err := client.AddHandler("^example\\..*$", func(message go_event_client.Message) {
+    fmt.Printf("Received: %s\n", message.Message)
+})
 err := client.Start()
 err := client.NewSubscription(ctx, "example.topic")
 ```
@@ -118,13 +144,15 @@ err := client.NewSubscription(ctx, "example.topic")
 client := go_event_client.NewEventClient(ctx, options, getToken, logger)
 
 // Handler for all user events
-err := client.AddHandler("^user\\..*$", func(message string) {
-    fmt.Printf("User event: %s\n", message)
+err := client.AddHandler("^user\\..*$", func(message go_event_client.Message) {
+    fmt.Printf("User event: %s\n", message.Message)
+    // Access topic and other metadata
+    fmt.Printf("Topic: %s\n", message.Topic)
 })
 
 // Handler for all node events
-err := client.AddHandler("^node\\..*$", func(message string) {
-    fmt.Printf("Node event: %s\n", message)
+err = client.AddHandler("^node\\..*$", func(message go_event_client.Message) {
+    fmt.Printf("Node event: %s\n", message.Message)
 })
 
 err := client.Start()

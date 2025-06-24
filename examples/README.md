@@ -85,8 +85,8 @@ client.PublishViaAPI(ctx, "demo.basic.test", message, "", nil)
 All examples use message handlers to receive and process events:
 
 ```go
-client.AddHandler("^demo\\.basic\\..*", func(message string) {
-    fmt.Printf("Received: %s\n", message)
+client.AddHandler("^demo\\.basic\\..*", func(message go_event_client.Message) {
+    fmt.Printf("Received: %s\n", message.Message)
 })
 ```
 

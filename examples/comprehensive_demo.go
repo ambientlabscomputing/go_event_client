@@ -55,8 +55,8 @@ func main() {
 	// Example 1: Basic subscription and message handling
 	fmt.Println("\n=== Example 1: Basic Subscription ===")
 
-	err := client.AddHandler("^demo\\.basic\\..*", func(message string) {
-		fmt.Printf("📨 Basic message received: %s\n", message)
+	err := client.AddHandler("^demo\\.basic\\..*", func(message go_event_client.Message) {
+		fmt.Printf("📨 Basic message received: %s\n", message.Message)
 	})
 	if err != nil {
 		log.Fatalf("Failed to add basic handler: %v", err)
@@ -85,8 +85,8 @@ func main() {
 	// Example 2: Aggregate type subscription
 	fmt.Println("\n=== Example 2: Aggregate Type Subscription ===")
 
-	err = client.AddHandler("^demo\\.user\\..*", func(message string) {
-		fmt.Printf("👤 User aggregate message received: %s\n", message)
+	err = client.AddHandler("^demo\\.user\\..*", func(message go_event_client.Message) {
+		fmt.Printf("👤 User aggregate message received: %s\n", message.Message)
 	})
 	if err != nil {
 		log.Fatalf("Failed to add user handler: %v", err)
@@ -116,8 +116,8 @@ func main() {
 	// Example 3: Specific aggregate subscription
 	fmt.Println("\n=== Example 3: Specific Aggregate Subscription ===")
 
-	err = client.AddHandler("^demo\\.order\\..*", func(message string) {
-		fmt.Printf("🛒 Order aggregate message received: %s\n", message)
+	err = client.AddHandler("^demo\\.order\\..*", func(message go_event_client.Message) {
+		fmt.Printf("🛒 Order aggregate message received: %s\n", message.Message)
 	})
 	if err != nil {
 		log.Fatalf("Failed to add order handler: %v", err)
@@ -149,8 +149,8 @@ func main() {
 	// Example 4: Regex subscription
 	fmt.Println("\n=== Example 4: Regex Subscription ===")
 
-	err = client.AddHandler("^demo\\.system\\..*", func(message string) {
-		fmt.Printf("🔧 System message received: %s\n", message)
+	err = client.AddHandler("^demo\\.system\\..*", func(message go_event_client.Message) {
+		fmt.Printf("🔧 System message received: %s\n", message.Message)
 	})
 	if err != nil {
 		log.Fatalf("Failed to add system handler: %v", err)

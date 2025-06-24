@@ -20,7 +20,7 @@ type GetTokenCallback func(ctx context.Context) (string, error)
 type EventClient interface {
 	Start() error
 	Stop() error
-	AddHandler(expr string, handler func(string)) error
+	AddHandler(expr string, handler func(Message)) error
 	Publish(topic string, v interface{}) error
 	PublishWithAggregate(topic string, v interface{}, aggregateType string, aggregateID *int) error
 	PublishViaAPI(ctx context.Context, topic string, v interface{}, aggregateType string, aggregateID *int) error
@@ -38,7 +38,7 @@ type EventClientOptions struct {
 
 type handlerEntry struct {
 	pattern *regexp.Regexp
-	handler func(string)
+	handler func(Message)
 }
 
 type EventClientImpl struct {
@@ -295,7 +295,7 @@ func (e *EventClientImpl) dispatch(raw []byte) {
 		if entry.pattern.MatchString(m.Topic) {
 			logger.Debug("handler matched", "pattern", entry.pattern.String(), "topic", m.Topic)
 			found_handler = true
-			go entry.handler(m.Message)
+			go entry.handler(m)
 		}
 		if !found_handler {
 			logger.Warn("no handler matched for topic", "topic", m.Topic, "pattern", entry.pattern.String())
@@ -305,7 +305,7 @@ func (e *EventClientImpl) dispatch(raw []byte) {
 
 // AddHandler registers a callback for topics matching the given regex
 // The expr should be a valid Go regex (e.g. "^user\\..*$" to match "user.*").
-func (e *EventClientImpl) AddHandler(expr string, handler func(string)) error {
+func (e *EventClientImpl) AddHandler(expr string, handler func(Message)) error {
 	re, err := regexp.Compile(expr)
 	if err != nil {
 		return err

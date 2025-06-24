@@ -57,8 +57,8 @@ func main() {
     client := go_event_client.NewEventClient(context.Background(), options, getToken, logger)
     
     // Add message handler
-    err := client.AddHandler("^user\\..*", func(message string) {
-        fmt.Printf("Received user event: %s\n", message)
+    err := client.AddHandler("^user\\..*", func(message go_event_client.Message) {
+        fmt.Printf("Received user event: %s\n", message.Message)
     })
     if err != nil {
         panic(err)
@@ -174,7 +174,7 @@ token, err := go_event_client.GetOAuthToken(ctx, oauthURL, clientID, clientSecre
 type EventClient interface {
     Start() error
     Stop() error
-    AddHandler(expr string, handler func(string)) error
+    AddHandler(expr string, handler func(Message)) error
     Publish(topic string, v interface{}) error
     PublishWithAggregate(topic string, v interface{}, aggregateType string, aggregateID *int) error
     PublishViaAPI(ctx context.Context, topic string, v interface{}, aggregateType string, aggregateID *int) error

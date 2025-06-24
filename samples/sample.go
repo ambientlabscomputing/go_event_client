@@ -39,8 +39,8 @@ func main() {
 	// Add handlers for different types of events
 
 	// Handler for exact topic matching
-	err := client.AddHandler("^example-1\\.topic$", func(message string) {
-		fmt.Printf("Received message on exact match 'example-1.topic': %s\n", message)
+	err := client.AddHandler("^example-1\\.topic$", func(message go_event_client.Message) {
+		fmt.Printf("Received message on exact match 'example-1.topic': %s\n", message.Message)
 	})
 	if err != nil {
 		logger.Error("failed to add exact match handler", "error", err)
@@ -48,8 +48,8 @@ func main() {
 	}
 
 	// Handler for regex pattern matching
-	err = client.AddHandler("^user\\..*$", func(message string) {
-		fmt.Printf("Received user event: %s\n", message)
+	err = client.AddHandler("^user\\..*$", func(message go_event_client.Message) {
+		fmt.Printf("Received user event: %s\n", message.Message)
 	})
 	if err != nil {
 		logger.Error("failed to add regex handler", "error", err)
@@ -57,8 +57,8 @@ func main() {
 	}
 
 	// Handler for node events
-	err = client.AddHandler("^node\\..*$", func(message string) {
-		fmt.Printf("Received node event: %s\n", message)
+	err = client.AddHandler("^node\\..*$", func(message go_event_client.Message) {
+		fmt.Printf("Received node event: %s\n", message.Message)
 	})
 	if err != nil {
 		logger.Error("failed to add node handler", "error", err)
