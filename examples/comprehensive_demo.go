@@ -18,11 +18,11 @@ func main() {
 	}))
 
 	// Load environment variables
-	apiURL := os.Getenv("AMBIENT_EVENT_API_URL")
-	socketsURL := os.Getenv("AMBIENT_SOCKETS_URL")
-	clientID := os.Getenv("AMBIENT_CLIENT_ID")
-	clientSecret := os.Getenv("AMBIENT_CLIENT_SECRET")
-	oauthURL := os.Getenv("AMBIENT_OAUTH_URL")
+	apiURL := os.Getenv("EVENT_API_URL")
+	socketsURL := os.Getenv("SOCKETS_URL")
+	clientID := os.Getenv("OAUTH_CLIENT_ID")
+	clientSecret := os.Getenv("OAUTH_CLIENT_SECRET")
+	oauthURL := os.Getenv("OAUTH_TOKEN_URL")
 
 	if apiURL == "" || socketsURL == "" || clientID == "" || clientSecret == "" || oauthURL == "" {
 		log.Fatal("Missing required environment variables. Please set AMBIENT_EVENT_API_URL, AMBIENT_SOCKETS_URL, AMBIENT_CLIENT_ID, AMBIENT_CLIENT_SECRET, and AMBIENT_OAUTH_URL")
@@ -56,7 +56,7 @@ func main() {
 	fmt.Println("\n=== Example 1: Basic Subscription ===")
 
 	err := client.AddHandler("^demo\\.basic\\..*", func(message go_event_client.Message) {
-		fmt.Printf("📨 Basic message received: %s\n", message.Message)
+		fmt.Printf("📨 Basic message received: %s\n", message.Content)
 	})
 	if err != nil {
 		log.Fatalf("Failed to add basic handler: %v", err)
@@ -86,7 +86,7 @@ func main() {
 	fmt.Println("\n=== Example 2: Aggregate Type Subscription ===")
 
 	err = client.AddHandler("^demo\\.user\\..*", func(message go_event_client.Message) {
-		fmt.Printf("👤 User aggregate message received: %s\n", message.Message)
+		fmt.Printf("👤 User aggregate message received: %s\n", message.Content)
 	})
 	if err != nil {
 		log.Fatalf("Failed to add user handler: %v", err)
@@ -117,7 +117,7 @@ func main() {
 	fmt.Println("\n=== Example 3: Specific Aggregate Subscription ===")
 
 	err = client.AddHandler("^demo\\.order\\..*", func(message go_event_client.Message) {
-		fmt.Printf("🛒 Order aggregate message received: %s\n", message.Message)
+		fmt.Printf("🛒 Order aggregate message received: %s\n", message.Content)
 	})
 	if err != nil {
 		log.Fatalf("Failed to add order handler: %v", err)
@@ -150,7 +150,7 @@ func main() {
 	fmt.Println("\n=== Example 4: Regex Subscription ===")
 
 	err = client.AddHandler("^demo\\.system\\..*", func(message go_event_client.Message) {
-		fmt.Printf("🔧 System message received: %s\n", message.Message)
+		fmt.Printf("🔧 System message received: %s\n", message.Content)
 	})
 	if err != nil {
 		log.Fatalf("Failed to add system handler: %v", err)

@@ -90,7 +90,7 @@ func (e *EventClientImpl) Start() error {
 	e.send = make(chan []byte, 256)
 
 	var err error
-	connURI := e.Options.SocketsURL + "/ws/" + e.Session.Token
+	connURI := e.Options.SocketsURL + "/ws/" + e.Session.ID
 	logger.Info("connecting to websocket", "url", connURI)
 	e.conn, _, err = websocket.DefaultDialer.Dial(connURI, nil)
 	if err != nil {
@@ -155,7 +155,18 @@ func (e *EventClientImpl) RequestSession() error {
 		logger.Error("failed to get token", "error", err)
 		return err
 	}
-	req, err := http.NewRequestWithContext(e.Ctx, http.MethodPost, e.Options.EventAPIURL+"/v2/sessions", nil)
+
+	sessionCreate := SessionCreate{
+		SubscriberID: e.Subscriber.ID,
+	}
+
+	jsonData, err := json.Marshal(sessionCreate)
+	if err != nil {
+		logger.Error("failed to marshal session create", "error", err)
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(e.Ctx, http.MethodPost, e.Options.EventAPIURL+"/v2/sessions", bytes.NewBuffer(jsonData))
 	if err != nil {
 		logger.Error("failed to create request", "error", err)
 		return err
@@ -332,7 +343,7 @@ func (e *EventClientImpl) PublishWithAggregate(topic string, v interface{}, aggr
 	if err != nil {
 		return err
 	}
-	msg.Message = string(data)
+	msg.Content = string(data)
 
 	frame, err := json.Marshal(msg)
 	if err != nil {
