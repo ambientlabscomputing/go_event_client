@@ -47,8 +47,8 @@ func TestIntegration_BasicSubscription(t *testing.T) {
 
 	// Add a handler for test messages
 	err = client.AddHandler("^test\\.integration\\..*", func(message Message) {
-		t.Logf("Received message: %s", message.Message)
-		received <- message.Message
+		t.Logf("Received message: %s", message.Content)
+		received <- message.Content
 	})
 	if err != nil {
 		t.Fatalf("Failed to add handler: %v", err)
@@ -123,8 +123,8 @@ func TestIntegration_AggregateTypeSubscription(t *testing.T) {
 
 	// Add a handler for aggregate messages
 	err = client.AddHandler("^test\\.aggregate\\..*", func(message Message) {
-		t.Logf("Received aggregate message: %s", message.Message)
-		received <- message.Message
+		t.Logf("Received aggregate message: %s", message.Content)
+		received <- message.Content
 	})
 	if err != nil {
 		t.Fatalf("Failed to add handler: %v", err)
@@ -189,8 +189,8 @@ func TestIntegration_SpecificAggregateSubscription(t *testing.T) {
 
 	// Add a handler for specific aggregate messages
 	err = client.AddHandler("^test\\.specific\\..*", func(message Message) {
-		t.Logf("Received specific aggregate message: %s", message.Message)
-		received <- message.Message
+		t.Logf("Received specific aggregate message: %s", message.Content)
+		received <- message.Content
 	})
 	if err != nil {
 		t.Fatalf("Failed to add handler: %v", err)
@@ -256,8 +256,8 @@ func TestIntegration_RegexSubscription(t *testing.T) {
 
 	// Add a handler for regex pattern messages
 	err = client.AddHandler("^test\\.regex\\..*", func(message Message) {
-		t.Logf("Received regex message: %s", message.Message)
-		received <- message.Message
+		t.Logf("Received regex message: %s", message.Content)
+		received <- message.Content
 	})
 	if err != nil {
 		t.Fatalf("Failed to add handler: %v", err)

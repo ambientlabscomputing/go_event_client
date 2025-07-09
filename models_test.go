@@ -13,10 +13,12 @@ func TestMessage_JSONMarshaling(t *testing.T) {
 		ID:            "550e8400-e29b-41d4-a716-446655440000",
 		CreatedAt:     "2023-01-01T00:00:00Z",
 		Topic:         "test.topic",
-		Message:       `{"key": "value"}`,
-		ConnectionID:  "550e8400-e29b-41d4-a716-446655440001",
-		SessionID:     "550e8400-e29b-41d4-a716-446655440002",
+		Content:       `{"key": "value"}`,
+		SubscriberID:  "550e8400-e29b-41d4-a716-446655440001",
+		ConnectionID:  "550e8400-e29b-41d4-a716-446655440002",
+		SessionID:     "550e8400-e29b-41d4-a716-446655440003",
 		Timestamp:     "2023-01-01T00:00:00Z",
+		Priority:      "normal",
 		AggregateType: "node",
 		AggregateID:   &aggregateID,
 	}
@@ -55,10 +57,12 @@ func TestMessage_JSONMarshalingWithoutAggregateFields(t *testing.T) {
 		ID:           "550e8400-e29b-41d4-a716-446655440000",
 		CreatedAt:    "2023-01-01T00:00:00Z",
 		Topic:        "test.topic",
-		Message:      `{"key": "value"}`,
-		ConnectionID: "550e8400-e29b-41d4-a716-446655440001",
-		SessionID:    "550e8400-e29b-41d4-a716-446655440002",
+		Content:      `{"key": "value"}`,
+		SubscriberID: "550e8400-e29b-41d4-a716-446655440001",
+		ConnectionID: "550e8400-e29b-41d4-a716-446655440002",
+		SessionID:    "550e8400-e29b-41d4-a716-446655440003",
 		Timestamp:    "2023-01-01T00:00:00Z",
+		Priority:     "normal",
 	}
 
 	// Marshal to JSON

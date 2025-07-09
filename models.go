@@ -4,10 +4,12 @@ type Message struct {
 	ID            string `json:"id"`
 	CreatedAt     string `json:"created_at"`
 	Topic         string `json:"topic"`
-	Message       string `json:"message"`
+	Content       string `json:"content"`
+	SubscriberID  string `json:"subscriber_id"`
 	ConnectionID  string `json:"connection_id"`
 	SessionID     string `json:"session_id"`
 	Timestamp     string `json:"timestamp"`
+	Priority      string `json:"priority,omitempty"`
 	AggregateType string `json:"aggregate_type,omitempty"`
 	AggregateID   *int   `json:"aggregate_id,omitempty"`
 }
@@ -31,6 +33,10 @@ type SubscriptionCreate struct {
 	AggregateType string `json:"aggregate_type,omitempty"`
 	AggregateID   *int   `json:"aggregate_id,omitempty"`
 	IsRegex       bool   `json:"is_regex,omitempty"`
+}
+
+type SessionCreate struct {
+	SubscriberID string `json:"subscriber_id"`
 }
 
 type Subscription struct {

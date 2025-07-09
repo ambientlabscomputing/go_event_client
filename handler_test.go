@@ -30,7 +30,7 @@ func TestHandlerSignature(t *testing.T) {
 	testMessage := Message{
 		ID:           "test-id",
 		Topic:        "test.topic",
-		Message:      `{"test": "data"}`,
+		Content:      `{"test": "data"}`,
 		ConnectionID: "conn-id",
 		SessionID:    "sess-id",
 		Timestamp:    "2023-01-01T00:00:00Z",
