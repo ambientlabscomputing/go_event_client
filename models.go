@@ -7,8 +7,8 @@ import (
 
 // KeyValuePair represents a key-value pair from the server
 type KeyValuePair struct {
-	Key   string `json:"Key"`
-	Value string `json:"Value"`
+	Key   string      `json:"Key"`
+	Value interface{} `json:"Value"`
 }
 
 // MessageContent represents flexible content that can be either a string or key-value pairs
@@ -31,10 +31,12 @@ func (mc *MessageContent) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as key-value pairs array
 	var kvPairs []KeyValuePair
 	if err := json.Unmarshal(data, &kvPairs); err == nil {
-		// Convert to map for easier access
+		// Convert to map for easier access, converting all values to strings
 		contentMap := make(map[string]string)
 		for _, pair := range kvPairs {
-			contentMap[pair.Key] = pair.Value
+			// Convert value to string regardless of original type
+			valueStr := fmt.Sprintf("%v", pair.Value)
+			contentMap[pair.Key] = valueStr
 		}
 		mc.parsed = contentMap
 		return nil
