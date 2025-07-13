@@ -308,9 +308,10 @@ func (e *EventClientImpl) dispatch(raw []byte) {
 			found_handler = true
 			go entry.handler(m)
 		}
-		if !found_handler {
-			logger.Warn("no handler matched for topic", "topic", m.Topic, "pattern", entry.pattern.String())
-		}
+	}
+
+	if !found_handler {
+		logger.Warn("no handler matched for topic", "topic", m.Topic)
 	}
 }
 
@@ -379,7 +380,7 @@ func (e *EventClientImpl) PublishViaAPI(ctx context.Context, topic string, v int
 
 	msgCreate := MessageCreate{
 		Topic:         topic,
-		Message:       string(data),
+		Content:       string(data),
 		AggregateType: aggregateType,
 		AggregateID:   aggregateID,
 	}

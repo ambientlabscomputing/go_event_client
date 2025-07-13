@@ -137,7 +137,7 @@ type Message struct {
 
 type MessageCreate struct {
 	Topic         string `json:"topic"`
-	Message       string `json:"message"`
+	Content       string `json:"content"`
 	AggregateType string `json:"aggregate_type,omitempty"`
 	AggregateID   *int   `json:"aggregate_id,omitempty"`
 }
