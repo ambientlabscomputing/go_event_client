@@ -205,34 +205,52 @@ func (e *EventClientImpl) readPump() {
 	logger := e.Logger
 
 	// Set limits and pong handler
-	logger.Debug("setting read limits and pong handler")
+	logger.Info("READPUMP: Starting read pump")
+	logger.Debug("READPUMP: Setting read limits and pong handler")
 	e.conn.SetReadLimit(65536) // 64KB limit
 	e.conn.SetReadDeadline(time.Now().Add(time.Duration(e.Options.PingInterval) * time.Second))
 	e.conn.SetPongHandler(func(appData string) error {
+		logger.Debug("READPUMP: Received pong", "app_data", appData)
 		e.conn.SetReadDeadline(time.Now().Add(time.Duration(e.Options.PingInterval) * time.Second))
 		return nil
 	})
-	logger.Debug("starting read pump")
+	logger.Info("READPUMP: Read pump configured and started")
 
+	messageCount := 0
 	for {
 		select {
 		case <-e.ctx.Done():
-			logger.Debug("context done, stopping read pump")
+			logger.Info("READPUMP: Context cancelled, stopping read pump", "messages_processed", messageCount)
 			return
 		default:
+			logger.Debug("READPUMP: Waiting for WebSocket message...")
 			_, data, err := e.conn.ReadMessage()
 			if err != nil {
 				// Check if this is a graceful shutdown
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					logger.Debug("websocket closed gracefully", "error", err)
+					logger.Info("READPUMP: WebSocket closed gracefully", "error", err, "messages_processed", messageCount)
 					return
 				} else {
-					logger.Error("failed to read message", "error", err)
+					logger.Error("READPUMP: Failed to read WebSocket message", "error", err, "messages_processed", messageCount)
 					return
 				}
 			}
+
+			messageCount++
+			logger.Info("READPUMP: Received WebSocket message",
+				"message_number", messageCount,
+				"data_size", len(data),
+				"data_preview", func() string {
+					if len(data) > 200 {
+						return string(data[:200]) + "..."
+					}
+					return string(data)
+				}())
+
 			// Dispatch matching handlers in their own goroutines
+			logger.Debug("READPUMP: Dispatching message to handlers")
 			go e.dispatch(data)
+			logger.Debug("READPUMP: Message dispatched (async)")
 		}
 	}
 }
@@ -270,61 +288,158 @@ func (e *EventClientImpl) writePump() {
 func (e *EventClientImpl) dispatch(raw []byte) {
 	logger := e.Logger
 
-	logger.Debug("dispatching message", "raw_data", string(raw))
+	logger.Info("DISPATCH: Starting message dispatch", "message_size", len(raw))
+	logger.Debug("DISPATCH: Raw message data", "raw_data", string(raw))
+
 	if len(raw) == 0 {
-		logger.Warn("received empty frame, ignoring")
+		logger.Warn("DISPATCH: Received empty frame, ignoring")
 		return
 	}
 
 	var m Message
 	if err := json.Unmarshal(raw, &m); err != nil {
-		logger.Error("failed to unmarshal message", "error", err, "raw_data", string(raw))
+		logger.Error("DISPATCH: Failed to unmarshal message", "error", err, "raw_data", string(raw))
 		return
 	}
+
+	logger.Info("DISPATCH: Message unmarshaled successfully",
+		"topic", m.Topic,
+		"message_id", m.ID,
+		"subscriber_id", m.SubscriberID,
+		"session_id", m.SessionID,
+		"connection_id", m.ConnectionID,
+		"content_preview", func() string {
+			content := m.Content.String()
+			if len(content) > 100 {
+				return content[:100] + "..."
+			}
+			return content
+		}())
 
 	// Capture connection ID from the first message for API publishing
 	if e.ConnectionID == "" && m.ConnectionID != "" {
 		e.ConnectionID = m.ConnectionID
-		logger.Debug("captured connection ID", "connection_id", e.ConnectionID)
+		logger.Info("DISPATCH: Captured connection ID for API publishing", "connection_id", e.ConnectionID)
 	}
 
+	logger.Debug("DISPATCH: Acquiring read lock for handlers")
 	e.mu.RLock()
-	logger.Debug("acquired read lock for handlers", "num_handlers", len(e.handlers))
-	if len(e.handlers) == 0 {
-		logger.Debug("no handlers registered, ignoring message", "topic", m.Topic)
+	handlerCount := len(e.handlers)
+	logger.Info("DISPATCH: Handler lookup", "num_handlers", handlerCount, "topic", m.Topic)
+
+	if handlerCount == 0 {
+		logger.Warn("DISPATCH: No handlers registered, ignoring message", "topic", m.Topic)
 		e.mu.RUnlock()
 		return
 	}
+
 	// Copy handlers to avoid holding the lock while calling them
-	logger.Debug("found handlers for topic", "topic", m.Topic, "num_handlers", len(e.handlers))
 	entries := append([]handlerEntry(nil), e.handlers...)
 	e.mu.RUnlock()
+	logger.Debug("DISPATCH: Released read lock, copied handlers", "handler_count", len(entries))
 
 	found_handler := false
-	for _, entry := range entries {
-		logger.Debug("checking handler", "pattern", entry.pattern.String(), "topic", m.Topic)
-		if entry.pattern.MatchString(m.Topic) {
-			logger.Debug("handler matched", "pattern", entry.pattern.String(), "topic", m.Topic)
+	matching_handlers := 0
+
+	for i, entry := range entries {
+		pattern := entry.pattern.String()
+		logger.Debug("DISPATCH: Testing handler",
+			"handler_index", i,
+			"pattern", pattern,
+			"topic", m.Topic)
+
+		matches := entry.pattern.MatchString(m.Topic)
+		logger.Debug("DISPATCH: Pattern match result",
+			"handler_index", i,
+			"pattern", pattern,
+			"topic", m.Topic,
+			"matches", matches)
+
+		if matches {
+			logger.Info("DISPATCH: Handler matched!",
+				"handler_index", i,
+				"pattern", pattern,
+				"topic", m.Topic)
 			found_handler = true
-			go entry.handler(m)
+			matching_handlers++
+
+			// Wrap handler execution with logging and panic recovery
+			go func(handlerIndex int, handlerPattern string, message Message, handlerFunc func(Message)) {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("HANDLER: Handler panicked",
+							"handler_index", handlerIndex,
+							"pattern", handlerPattern,
+							"topic", message.Topic,
+							"panic", r)
+					}
+				}()
+
+				logger.Info("HANDLER: Executing handler",
+					"handler_index", handlerIndex,
+					"pattern", handlerPattern,
+					"topic", message.Topic,
+					"message_id", message.ID)
+
+				handlerFunc(message)
+
+				logger.Info("HANDLER: Handler completed",
+					"handler_index", handlerIndex,
+					"pattern", handlerPattern,
+					"topic", message.Topic,
+					"message_id", message.ID)
+			}(i, pattern, m, entry.handler)
+		} else {
+			logger.Debug("DISPATCH: Handler did not match",
+				"handler_index", i,
+				"pattern", pattern,
+				"topic", m.Topic)
 		}
 	}
 
 	if !found_handler {
-		logger.Warn("no handler matched for topic", "topic", m.Topic)
+		logger.Warn("DISPATCH: No handlers matched topic",
+			"topic", m.Topic,
+			"total_handlers", len(entries),
+			"message_id", m.ID)
+		// Log all handler patterns for debugging
+		for i, entry := range entries {
+			logger.Debug("DISPATCH: Available handler pattern",
+				"handler_index", i,
+				"pattern", entry.pattern.String())
+		}
+	} else {
+		logger.Info("DISPATCH: Message dispatched successfully",
+			"topic", m.Topic,
+			"message_id", m.ID,
+			"matching_handlers", matching_handlers,
+			"total_handlers", len(entries))
 	}
 }
 
 // AddHandler registers a callback for topics matching the given regex
 // The expr should be a valid Go regex (e.g. "^user\\..*$" to match "user.*").
 func (e *EventClientImpl) AddHandler(expr string, handler func(Message)) error {
+	logger := e.Logger
+	logger.Info("ADDHANDLER: Registering new handler", "pattern", expr)
+
 	re, err := regexp.Compile(expr)
 	if err != nil {
+		logger.Error("ADDHANDLER: Failed to compile regex pattern", "pattern", expr, "error", err)
 		return err
 	}
+
 	e.mu.Lock()
+	handlerIndex := len(e.handlers)
 	e.handlers = append(e.handlers, handlerEntry{pattern: re, handler: handler})
+	totalHandlers := len(e.handlers)
 	e.mu.Unlock()
+
+	logger.Info("ADDHANDLER: Handler registered successfully",
+		"pattern", expr,
+		"handler_index", handlerIndex,
+		"total_handlers", totalHandlers)
+
 	return nil
 }
 
@@ -541,4 +656,36 @@ func GetOAuthToken(ctx context.Context, oauthURL, clientID, clientSecret string)
 	}
 
 	return tokenResponse.AccessToken, nil
+}
+
+// ListHandlers returns information about currently registered handlers (for debugging)
+func (e *EventClientImpl) ListHandlers() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	patterns := make([]string, len(e.handlers))
+	for i, handler := range e.handlers {
+		patterns[i] = handler.pattern.String()
+	}
+
+	e.Logger.Info("LISTHANDLERS: Current registered handlers",
+		"total_handlers", len(patterns),
+		"patterns", patterns)
+
+	return patterns
+}
+
+// LogHandlerState logs the current state of all handlers (for debugging)
+func (e *EventClientImpl) LogHandlerState() {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	logger := e.Logger
+	logger.Info("HANDLER_STATE: Current handler registry", "total_handlers", len(e.handlers))
+
+	for i, handler := range e.handlers {
+		logger.Info("HANDLER_STATE: Handler details",
+			"handler_index", i,
+			"pattern", handler.pattern.String())
+	}
 }
