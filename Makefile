@@ -172,7 +172,7 @@ examples: build ## Build all examples
 run-demo: check-env examples ## Run the comprehensive demo
 	@echo "$(BLUE)Running comprehensive demo...$(NC)"
 	@echo "$(YELLOW)Make sure your .env file is configured with valid credentials$(NC)"
-	source .env && cd examples && ./comprehensive_demo
+	set -a && . ./.env && set +a && cd examples && ./comprehensive_demo
 
 run-sample: build ## Run the sample application
 	@echo "$(BLUE)Running sample application...$(NC)"

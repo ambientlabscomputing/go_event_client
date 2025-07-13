@@ -25,7 +25,7 @@ func main() {
 	oauthURL := os.Getenv("OAUTH_TOKEN_URL")
 
 	if apiURL == "" || socketsURL == "" || clientID == "" || clientSecret == "" || oauthURL == "" {
-		log.Fatal("Missing required environment variables. Please set AMBIENT_EVENT_API_URL, AMBIENT_SOCKETS_URL, AMBIENT_CLIENT_ID, AMBIENT_CLIENT_SECRET, and AMBIENT_OAUTH_URL")
+		log.Fatal("Missing required environment variables. Please set EVENT_API_URL, SOCKETS_URL, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, and OAUTH_TOKEN_URL")
 	}
 
 	// Create OAuth token callback

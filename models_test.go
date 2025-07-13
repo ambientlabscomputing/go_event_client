@@ -13,7 +13,7 @@ func TestMessage_JSONMarshaling(t *testing.T) {
 		ID:            "550e8400-e29b-41d4-a716-446655440000",
 		CreatedAt:     "2023-01-01T00:00:00Z",
 		Topic:         "test.topic",
-		Content:       `{"key": "value"}`,
+		Content:       NewMessageContentFromString(`{"key": "value"}`),
 		SubscriberID:  "550e8400-e29b-41d4-a716-446655440001",
 		ConnectionID:  "550e8400-e29b-41d4-a716-446655440002",
 		SessionID:     "550e8400-e29b-41d4-a716-446655440003",
@@ -57,7 +57,7 @@ func TestMessage_JSONMarshalingWithoutAggregateFields(t *testing.T) {
 		ID:           "550e8400-e29b-41d4-a716-446655440000",
 		CreatedAt:    "2023-01-01T00:00:00Z",
 		Topic:        "test.topic",
-		Content:      `{"key": "value"}`,
+		Content:      NewMessageContentFromString(`{"key": "value"}`),
 		SubscriberID: "550e8400-e29b-41d4-a716-446655440001",
 		ConnectionID: "550e8400-e29b-41d4-a716-446655440002",
 		SessionID:    "550e8400-e29b-41d4-a716-446655440003",
@@ -217,5 +217,94 @@ func TestSession_UUIDFields(t *testing.T) {
 	}
 	if unmarshaledSession.SubscriberID != session.SubscriberID {
 		t.Errorf("SubscriberID mismatch: got %s, want %s", unmarshaledSession.SubscriberID, session.SubscriberID)
+	}
+	if unmarshaledSession.Status != session.Status {
+		t.Errorf("Status mismatch: got %s, want %s", unmarshaledSession.Status, session.Status)
+	}
+}
+
+func TestMessageContent_FlexibleParsing(t *testing.T) {
+	// Test parsing string content
+	stringContentJSON := `{"id":"test-1","topic":"test.topic","content":"Hello World","subscriber_id":"test-sub","connection_id":"test-conn","session_id":"test-sess","timestamp":"2023-01-01T00:00:00Z","priority":"normal","created_at":"2023-01-01T00:00:00Z"}`
+
+	var stringMsg Message
+	err := json.Unmarshal([]byte(stringContentJSON), &stringMsg)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal string content: %v", err)
+	}
+
+	if !stringMsg.Content.IsString() {
+		t.Error("Expected content to be recognized as string")
+	}
+
+	if stringMsg.Content.String() != "Hello World" {
+		t.Errorf("Expected content string to be 'Hello World', got '%s'", stringMsg.Content.String())
+	}
+
+	// Test parsing key-value pairs content
+	kvContentJSON := `{"id":"test-2","topic":"test.topic","content":[{"Key":"message","Value":"Hello from WebSocket tester!"},{"Key":"timestamp","Value":"2025-07-13T15:40:06.471Z"}],"subscriber_id":"test-sub","connection_id":"test-conn","session_id":"test-sess","timestamp":"2023-01-01T00:00:00Z","priority":"normal","created_at":"2023-01-01T00:00:00Z"}`
+
+	var kvMsg Message
+	err = json.Unmarshal([]byte(kvContentJSON), &kvMsg)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal key-value content: %v", err)
+	}
+
+	if !kvMsg.Content.IsMap() {
+		t.Error("Expected content to be recognized as map")
+	}
+
+	contentMap, ok := kvMsg.Content.AsMap()
+	if !ok {
+		t.Fatal("Expected content to be accessible as map")
+	}
+
+	expectedMessage := "Hello from WebSocket tester!"
+	if contentMap["message"] != expectedMessage {
+		t.Errorf("Expected message value to be '%s', got '%s'", expectedMessage, contentMap["message"])
+	}
+
+	expectedTimestamp := "2025-07-13T15:40:06.471Z"
+	if contentMap["timestamp"] != expectedTimestamp {
+		t.Errorf("Expected timestamp value to be '%s', got '%s'", expectedTimestamp, contentMap["timestamp"])
+	}
+
+	// Test GetValue method
+	if kvMsg.Content.GetValue("message") != expectedMessage {
+		t.Errorf("GetValue('message') returned '%s', expected '%s'", kvMsg.Content.GetValue("message"), expectedMessage)
+	}
+
+	// Test that non-existent keys return empty string
+	if kvMsg.Content.GetValue("nonexistent") != "" {
+		t.Errorf("GetValue('nonexistent') should return empty string, got '%s'", kvMsg.Content.GetValue("nonexistent"))
+	}
+
+	// Test marshaling back
+	stringMsgBytes, err := json.Marshal(stringMsg)
+	if err != nil {
+		t.Fatalf("Failed to marshal string message: %v", err)
+	}
+
+	kvMsgBytes, err := json.Marshal(kvMsg)
+	if err != nil {
+		t.Fatalf("Failed to marshal key-value message: %v", err)
+	}
+
+	// Should be able to unmarshal back successfully
+	var remarshaled1, remarshaled2 Message
+	if err := json.Unmarshal(stringMsgBytes, &remarshaled1); err != nil {
+		t.Fatalf("Failed to remarshal string message: %v", err)
+	}
+
+	if err := json.Unmarshal(kvMsgBytes, &remarshaled2); err != nil {
+		t.Fatalf("Failed to remarshal key-value message: %v", err)
+	}
+
+	if remarshaled1.Content.String() != stringMsg.Content.String() {
+		t.Error("Remarshaled string content doesn't match original")
+	}
+
+	if !remarshaled2.Content.IsMap() {
+		t.Error("Remarshaled key-value content should still be a map")
 	}
 }

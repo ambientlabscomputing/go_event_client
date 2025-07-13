@@ -343,7 +343,7 @@ func (e *EventClientImpl) PublishWithAggregate(topic string, v interface{}, aggr
 	if err != nil {
 		return err
 	}
-	msg.Content = string(data)
+	msg.Content = NewMessageContentFromString(string(data))
 
 	frame, err := json.Marshal(msg)
 	if err != nil {
