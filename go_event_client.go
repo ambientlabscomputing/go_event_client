@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"sync"
@@ -208,10 +209,16 @@ func (e *EventClientImpl) readPump() {
 	logger.Info("READPUMP: Starting read pump")
 	logger.Debug("READPUMP: Setting read limits and pong handler")
 	e.conn.SetReadLimit(65536) // 64KB limit
-	e.conn.SetReadDeadline(time.Now().Add(time.Duration(e.Options.PingInterval) * time.Second))
+
+	// Set read deadline to 2x ping interval to allow for network latency
+	readTimeout := time.Duration(e.Options.PingInterval*2) * time.Second
+	e.conn.SetReadDeadline(time.Now().Add(readTimeout))
+	logger.Debug("READPUMP: Read timeout configured", "ping_interval", e.Options.PingInterval, "read_timeout", readTimeout)
+
 	e.conn.SetPongHandler(func(appData string) error {
 		logger.Debug("READPUMP: Received pong", "app_data", appData)
-		e.conn.SetReadDeadline(time.Now().Add(time.Duration(e.Options.PingInterval) * time.Second))
+		// Extend read deadline when we receive a pong
+		e.conn.SetReadDeadline(time.Now().Add(readTimeout))
 		return nil
 	})
 	logger.Info("READPUMP: Read pump configured and started")
@@ -229,6 +236,13 @@ func (e *EventClientImpl) readPump() {
 				// Check if this is a graceful shutdown
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 					logger.Info("READPUMP: WebSocket closed gracefully", "error", err, "messages_processed", messageCount)
+					return
+				} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					logger.Error("READPUMP: WebSocket read timeout - server may not be responding to pings",
+						"error", err,
+						"messages_processed", messageCount,
+						"ping_interval", e.Options.PingInterval,
+						"read_timeout", time.Duration(e.Options.PingInterval*2)*time.Second)
 					return
 				} else {
 					logger.Error("READPUMP: Failed to read WebSocket message", "error", err, "messages_processed", messageCount)
