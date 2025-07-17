@@ -257,7 +257,9 @@ func (e *EventClientImpl) readPump() {
 
 // writePump blocks on the send channel and ticker for pings
 func (e *EventClientImpl) writePump() {
-	ticker := time.NewTicker(time.Duration(e.Options.PingInterval))
+	pingInterval := time.Duration(e.Options.PingInterval) * time.Second
+	ticker := time.NewTicker(pingInterval)
+	e.Logger.Debug("WRITEPUMP: Starting write pump", "ping_interval_seconds", e.Options.PingInterval, "ping_interval_duration", pingInterval)
 	defer func() {
 		ticker.Stop()
 		e.conn.Close()
@@ -273,10 +275,13 @@ func (e *EventClientImpl) writePump() {
 			}
 
 		case <-ticker.C:
+			e.Logger.Debug("WRITEPUMP: Sending ping message")
 			e.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := e.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				e.Logger.Error("WRITEPUMP: Failed to send ping", "error", err)
 				return
 			}
+			e.Logger.Debug("WRITEPUMP: Ping message sent successfully")
 
 		case <-e.ctx.Done():
 			return
