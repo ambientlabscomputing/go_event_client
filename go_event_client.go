@@ -32,9 +32,12 @@ type EventClient interface {
 }
 
 type EventClientOptions struct {
-	EventAPIURL  string
-	SocketsURL   string
-	PingInterval int
+	EventAPIURL          string
+	SocketsURL           string
+	PingInterval         int
+	MaxReconnectAttempts int           // Maximum number of reconnection attempts (0 = infinite)
+	ReconnectBackoff     time.Duration // Initial backoff duration between reconnection attempts
+	MaxReconnectBackoff  time.Duration // Maximum backoff duration
 }
 
 type handlerEntry struct {
@@ -59,15 +62,29 @@ type EventClientImpl struct {
 	mu           sync.RWMutex
 	ctx          context.Context
 	cancel       context.CancelFunc
+
+	// reconnection state
+	reconnectMu      sync.Mutex
+	reconnectCount   int
+	isReconnecting   bool
+	reconnectTrigger chan struct{}
 }
 
 func NewEventClient(ctx context.Context, options EventClientOptions, getTokenCallback GetTokenCallback, logger *slog.Logger) EventClient {
+	// Set default reconnection options if not specified
+	if options.MaxReconnectAttempts == 0 && options.ReconnectBackoff == 0 {
+		options.MaxReconnectAttempts = 0 // Infinite retries by default
+		options.ReconnectBackoff = 1 * time.Second
+		options.MaxReconnectBackoff = 30 * time.Second
+	}
+
 	return &EventClientImpl{
 		Ctx:              ctx,
 		Options:          options,
 		GetTokenCallback: getTokenCallback,
 		Logger:           logger,
 		HTTPClient:       &http.Client{},
+		reconnectTrigger: make(chan struct{}, 1),
 	}
 }
 
@@ -90,18 +107,11 @@ func (e *EventClientImpl) Start() error {
 	e.ctx, e.cancel = context.WithCancel(e.Ctx)
 	e.send = make(chan []byte, 256)
 
-	var err error
-	connURI := e.Options.SocketsURL + "/ws/" + e.Session.ID
-	logger.Info("connecting to websocket", "url", connURI)
-	e.conn, _, err = websocket.DefaultDialer.Dial(connURI, nil)
-	if err != nil {
-		logger.Error("failed to connect to websocket", "error", err)
-		return err
-	}
+	// Start the reconnection manager
+	go e.reconnectionManager()
 
-	go e.writePump()
-	go e.readPump()
-	logger.Info("connected to websocket", "url", e.Options.SocketsURL)
+	// Trigger initial connection
+	e.triggerReconnect()
 
 	return nil
 }
@@ -236,18 +246,24 @@ func (e *EventClientImpl) readPump() {
 				// Check if this is a graceful shutdown
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 					logger.Info("READPUMP: WebSocket closed gracefully", "error", err, "messages_processed", messageCount)
-					return
 				} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					logger.Error("READPUMP: WebSocket read timeout - server may not be responding to pings",
 						"error", err,
 						"messages_processed", messageCount,
 						"ping_interval", e.Options.PingInterval,
 						"read_timeout", time.Duration(e.Options.PingInterval*2)*time.Second)
-					return
 				} else {
 					logger.Error("READPUMP: Failed to read WebSocket message", "error", err, "messages_processed", messageCount)
-					return
 				}
+
+				// Trigger reconnection for all error types except context cancellation
+				select {
+				case <-e.ctx.Done():
+					// Don't trigger reconnect if context is cancelled
+				default:
+					e.triggerReconnect()
+				}
+				return
 			}
 
 			messageCount++
@@ -276,28 +292,41 @@ func (e *EventClientImpl) writePump() {
 	e.Logger.Debug("WRITEPUMP: Starting write pump", "ping_interval_seconds", e.Options.PingInterval, "ping_interval_duration", pingInterval)
 	defer func() {
 		ticker.Stop()
-		e.conn.Close()
-		e.cancel()
+		if e.conn != nil {
+			e.conn.Close()
+		}
 	}()
 
 	for {
 		select {
 		case msg := <-e.send:
+			if e.conn == nil {
+				e.Logger.Warn("WRITEPUMP: No connection available, dropping message")
+				continue
+			}
 			e.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := e.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				e.Logger.Error("WRITEPUMP: Failed to send message", "error", err)
+				e.triggerReconnect()
 				return
 			}
 
 		case <-ticker.C:
+			if e.conn == nil {
+				e.Logger.Debug("WRITEPUMP: No connection available, skipping ping")
+				continue
+			}
 			e.Logger.Debug("WRITEPUMP: Sending ping message")
 			e.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := e.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				e.Logger.Error("WRITEPUMP: Failed to send ping", "error", err)
+				e.triggerReconnect()
 				return
 			}
 			e.Logger.Debug("WRITEPUMP: Ping message sent successfully")
 
 		case <-e.ctx.Done():
+			e.Logger.Info("WRITEPUMP: Context cancelled, stopping write pump")
 			return
 		}
 	}
@@ -436,6 +465,152 @@ func (e *EventClientImpl) dispatch(raw []byte) {
 	}
 }
 
+// triggerReconnect signals the reconnection manager to attempt reconnection
+func (e *EventClientImpl) triggerReconnect() {
+	e.reconnectMu.Lock()
+	defer e.reconnectMu.Unlock()
+
+	if e.isReconnecting {
+		e.Logger.Debug("RECONNECT: Reconnection already in progress, ignoring trigger")
+		return
+	}
+
+	e.Logger.Info("RECONNECT: Triggering reconnection attempt")
+	select {
+	case e.reconnectTrigger <- struct{}{}:
+		e.Logger.Debug("RECONNECT: Reconnection trigger sent")
+	default:
+		e.Logger.Debug("RECONNECT: Reconnection trigger channel already full")
+	}
+}
+
+// reconnectionManager handles WebSocket reconnection logic
+func (e *EventClientImpl) reconnectionManager() {
+	logger := e.Logger
+	logger.Info("RECONNECT_MANAGER: Starting reconnection manager")
+
+	for {
+		select {
+		case <-e.ctx.Done():
+			logger.Info("RECONNECT_MANAGER: Context cancelled, stopping reconnection manager")
+			return
+		case <-e.reconnectTrigger:
+			e.reconnectMu.Lock()
+			if e.isReconnecting {
+				e.reconnectMu.Unlock()
+				continue
+			}
+			e.isReconnecting = true
+			e.reconnectMu.Unlock()
+
+			logger.Info("RECONNECT_MANAGER: Starting reconnection process", "current_attempt", e.reconnectCount)
+
+			// Close existing connection if any
+			if e.conn != nil {
+				e.conn.Close()
+				e.conn = nil
+			}
+
+			// Attempt reconnection with backoff
+			success := e.attemptReconnection()
+
+			e.reconnectMu.Lock()
+			e.isReconnecting = false
+			if success {
+				e.reconnectCount = 0
+				logger.Info("RECONNECT_MANAGER: Reconnection successful, resetting attempt counter")
+			} else {
+				logger.Error("RECONNECT_MANAGER: Reconnection failed, giving up")
+			}
+			e.reconnectMu.Unlock()
+		}
+	}
+}
+
+// attemptReconnection performs the actual reconnection with exponential backoff
+func (e *EventClientImpl) attemptReconnection() bool {
+	logger := e.Logger
+	backoff := e.Options.ReconnectBackoff
+
+	for attempt := 1; ; attempt++ {
+		// Check if we should stop trying
+		if e.Options.MaxReconnectAttempts > 0 && attempt > e.Options.MaxReconnectAttempts {
+			logger.Error("RECONNECT: Maximum reconnection attempts reached",
+				"max_attempts", e.Options.MaxReconnectAttempts,
+				"total_attempts", attempt-1)
+			return false
+		}
+
+		// Check if context is cancelled
+		select {
+		case <-e.ctx.Done():
+			logger.Info("RECONNECT: Context cancelled during reconnection attempt", "attempt", attempt)
+			return false
+		default:
+		}
+
+		logger.Info("RECONNECT: Attempting to reconnect",
+			"attempt", attempt,
+			"max_attempts", e.Options.MaxReconnectAttempts,
+			"backoff_duration", backoff)
+
+		// Try to establish connection
+		if err := e.establishConnection(); err != nil {
+			logger.Error("RECONNECT: Failed to establish connection",
+				"attempt", attempt,
+				"error", err,
+				"retry_in", backoff)
+
+			// Wait before next attempt
+			select {
+			case <-time.After(backoff):
+				// Exponential backoff with jitter
+				backoff = time.Duration(float64(backoff) * 1.5)
+				if backoff > e.Options.MaxReconnectBackoff {
+					backoff = e.Options.MaxReconnectBackoff
+				}
+			case <-e.ctx.Done():
+				logger.Info("RECONNECT: Context cancelled during backoff", "attempt", attempt)
+				return false
+			}
+			continue
+		}
+
+		logger.Info("RECONNECT: Successfully reconnected",
+			"attempt", attempt,
+			"total_reconnections", e.reconnectCount+1)
+		e.reconnectCount++
+		return true
+	}
+}
+
+// establishConnection creates a new WebSocket connection and starts the pumps
+func (e *EventClientImpl) establishConnection() error {
+	logger := e.Logger
+
+	if e.Session == nil {
+		return fmt.Errorf("session not available for connection")
+	}
+
+	connURI := e.Options.SocketsURL + "/ws/" + e.Session.ID
+	logger.Info("RECONNECT: Connecting to WebSocket", "url", connURI)
+
+	conn, _, err := websocket.DefaultDialer.Dial(connURI, nil)
+	if err != nil {
+		return fmt.Errorf("failed to dial WebSocket: %w", err)
+	}
+
+	e.conn = conn
+	logger.Info("RECONNECT: WebSocket connection established")
+
+	// Start the pumps
+	go e.writePump()
+	go e.readPump()
+
+	logger.Info("RECONNECT: Read and write pumps started")
+	return nil
+}
+
 // AddHandler registers a callback for topics matching the given regex
 // The expr should be a valid Go regex (e.g. "^user\\..*$" to match "user.*").
 func (e *EventClientImpl) AddHandler(expr string, handler func(Message)) error {
@@ -551,10 +726,20 @@ func (e *EventClientImpl) PublishViaAPI(ctx context.Context, topic string, v int
 }
 
 func (e *EventClientImpl) Stop() error {
-	e.cancel()
+	e.Logger.Info("STOP: Stopping event client")
+
+	// Cancel context to stop all goroutines
+	if e.cancel != nil {
+		e.cancel()
+	}
+
+	// Close WebSocket connection
 	if e.conn != nil {
 		e.conn.Close()
+		e.conn = nil
 	}
+
+	e.Logger.Info("STOP: Event client stopped")
 	return nil
 }
 
