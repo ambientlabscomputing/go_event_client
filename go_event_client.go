@@ -212,7 +212,6 @@ func (e *EventClientImpl) RequestSession() error {
 
 // readPump blocks on ReadMessage, parsing incoming JSON frames and dispatching
 func (e *EventClientImpl) readPump() {
-	defer e.cancel()
 	logger := e.Logger
 
 	// Set limits and pong handler
