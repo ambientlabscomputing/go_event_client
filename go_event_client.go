@@ -68,6 +68,11 @@ type EventClientImpl struct {
 	reconnectCount   int
 	isReconnecting   bool
 	reconnectTrigger chan struct{}
+
+	// connection state management
+	connMu     sync.Mutex
+	pumpCtx    context.Context
+	pumpCancel context.CancelFunc
 }
 
 func NewEventClient(ctx context.Context, options EventClientOptions, getTokenCallback GetTokenCallback, logger *slog.Logger) EventClient {
@@ -211,7 +216,7 @@ func (e *EventClientImpl) RequestSession() error {
 }
 
 // readPump blocks on ReadMessage, parsing incoming JSON frames and dispatching
-func (e *EventClientImpl) readPump() {
+func (e *EventClientImpl) readPump(pumpCtx context.Context) {
 	logger := e.Logger
 
 	// Set limits and pong handler
@@ -235,8 +240,11 @@ func (e *EventClientImpl) readPump() {
 	messageCount := 0
 	for {
 		select {
+		case <-pumpCtx.Done():
+			logger.Info("READPUMP: Pump context cancelled, stopping read pump", "messages_processed", messageCount)
+			return
 		case <-e.ctx.Done():
-			logger.Info("READPUMP: Context cancelled, stopping read pump", "messages_processed", messageCount)
+			logger.Info("READPUMP: Client context cancelled, stopping read pump", "messages_processed", messageCount)
 			return
 		default:
 			logger.Debug("READPUMP: Waiting for WebSocket message...")
@@ -257,8 +265,10 @@ func (e *EventClientImpl) readPump() {
 
 				// Trigger reconnection for all error types except context cancellation
 				select {
+				case <-pumpCtx.Done():
+					// Don't trigger reconnect if pump context is cancelled
 				case <-e.ctx.Done():
-					// Don't trigger reconnect if context is cancelled
+					// Don't trigger reconnect if client context is cancelled
 				default:
 					e.triggerReconnect()
 				}
@@ -285,7 +295,7 @@ func (e *EventClientImpl) readPump() {
 }
 
 // writePump blocks on the send channel and ticker for pings
-func (e *EventClientImpl) writePump() {
+func (e *EventClientImpl) writePump(pumpCtx context.Context) {
 	pingInterval := time.Duration(e.Options.PingInterval) * time.Second
 	ticker := time.NewTicker(pingInterval)
 	e.Logger.Debug("WRITEPUMP: Starting write pump", "ping_interval_seconds", e.Options.PingInterval, "ping_interval_duration", pingInterval)
@@ -306,7 +316,15 @@ func (e *EventClientImpl) writePump() {
 			e.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := e.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 				e.Logger.Error("WRITEPUMP: Failed to send message", "error", err)
-				e.triggerReconnect()
+				// Only trigger reconnect if not shutting down
+				select {
+				case <-pumpCtx.Done():
+					// Don't trigger reconnect if pump context is cancelled
+				case <-e.ctx.Done():
+					// Don't trigger reconnect if client context is cancelled
+				default:
+					e.triggerReconnect()
+				}
 				return
 			}
 
@@ -319,13 +337,24 @@ func (e *EventClientImpl) writePump() {
 			e.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := e.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				e.Logger.Error("WRITEPUMP: Failed to send ping", "error", err)
-				e.triggerReconnect()
+				// Only trigger reconnect if not shutting down
+				select {
+				case <-pumpCtx.Done():
+					// Don't trigger reconnect if pump context is cancelled
+				case <-e.ctx.Done():
+					// Don't trigger reconnect if client context is cancelled
+				default:
+					e.triggerReconnect()
+				}
 				return
 			}
 			e.Logger.Debug("WRITEPUMP: Ping message sent successfully")
 
+		case <-pumpCtx.Done():
+			e.Logger.Info("WRITEPUMP: Pump context cancelled, stopping write pump")
+			return
 		case <-e.ctx.Done():
-			e.Logger.Info("WRITEPUMP: Context cancelled, stopping write pump")
+			e.Logger.Info("WRITEPUMP: Client context cancelled, stopping write pump")
 			return
 		}
 	}
@@ -504,11 +533,21 @@ func (e *EventClientImpl) reconnectionManager() {
 
 			logger.Info("RECONNECT_MANAGER: Starting reconnection process", "current_attempt", e.reconnectCount)
 
-			// Close existing connection if any
+			// Stop existing pumps and close connection
+			e.connMu.Lock()
+			if e.pumpCancel != nil {
+				logger.Debug("RECONNECT_MANAGER: Stopping existing pumps")
+				e.pumpCancel()
+				e.pumpCancel = nil
+			}
 			if e.conn != nil {
 				e.conn.Close()
 				e.conn = nil
 			}
+			e.connMu.Unlock()
+
+			// Small delay to ensure old goroutines have time to exit
+			time.Sleep(100 * time.Millisecond)
 
 			// Attempt reconnection with backoff
 			success := e.attemptReconnection()
@@ -599,12 +638,18 @@ func (e *EventClientImpl) establishConnection() error {
 		return fmt.Errorf("failed to dial WebSocket: %w", err)
 	}
 
+	e.connMu.Lock()
 	e.conn = conn
+	// Create a new context for the pumps that can be cancelled independently
+	e.pumpCtx, e.pumpCancel = context.WithCancel(e.ctx)
+	pumpCtx := e.pumpCtx
+	e.connMu.Unlock()
+
 	logger.Info("RECONNECT: WebSocket connection established")
 
-	// Start the pumps
-	go e.writePump()
-	go e.readPump()
+	// Start the pumps with the pump-specific context
+	go e.writePump(pumpCtx)
+	go e.readPump(pumpCtx)
 
 	logger.Info("RECONNECT: Read and write pumps started")
 	return nil
@@ -727,16 +772,26 @@ func (e *EventClientImpl) PublishViaAPI(ctx context.Context, topic string, v int
 func (e *EventClientImpl) Stop() error {
 	e.Logger.Info("STOP: Stopping event client")
 
-	// Cancel context to stop all goroutines
+	// Cancel pump contexts first to stop the goroutines
+	e.connMu.Lock()
+	if e.pumpCancel != nil {
+		e.pumpCancel()
+		e.pumpCancel = nil
+	}
+	e.connMu.Unlock()
+
+	// Cancel main context to stop all goroutines
 	if e.cancel != nil {
 		e.cancel()
 	}
 
 	// Close WebSocket connection
+	e.connMu.Lock()
 	if e.conn != nil {
 		e.conn.Close()
 		e.conn = nil
 	}
+	e.connMu.Unlock()
 
 	e.Logger.Info("STOP: Event client stopped")
 	return nil
